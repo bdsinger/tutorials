@@ -1,0 +1,40 @@
+package:
+     name: "brainiak_tutorials"
+     version: {{ TUTORIALS_VERSION }}
+build:
+     script_env:
+         - TUTORIALS_VERSION
+         - BRAINIAK_PKG
+     script: cp ${BRAINIAK_PKG} ${PREFIX}/
+requirements:
+     run:
+       # from brainiak setup.py requirements install
+       # any that are not available like pymanopt install above via pip
+         - python
+         - cython
+         - mpi4py
+         - nitime
+         - numpy
+         - scikit-learn >=0.18
+         - scipy !=1.0.0
+         - statsmodels
+         - theano >=1.0.4
+         - pybind11 >=1.7
+         - psutil
+         - nibabel
+         - typing
+       # from brainiak meta.yaml
+         - openmp
+       # ones I think we need
+         - mpich2
+       # additions for tutorials
+         - jupyter
+         - deepdish
+         - nilearn
+         - nxviz
+         - watchdog
+about:
+     home: https://brainiak.org
+     license: Apache License 2.0
+     summary: BrainIAK Tutorial Supporting Packages
+

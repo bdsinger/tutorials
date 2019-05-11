@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+#
+# build brainiak_tutorials pkg
+# given a local build of brainiak as a conda package
+set -e
+set -u
+
+# cleanup temp files/dirs mechanism
+NOCLEAN=1
+TDIR=$(mktemp -d)
+clist=("$TDIR")
+trap '{ cleanup; }' EXIT
+cleanup() {
+    [[ x$NOCLEAN == x ]] && action='rm -rf' || action='printf "not cleaned up: %s\n"'
+    for loc in ${clist[@]}; do
+      [[ -e $loc ]] && $action "$loc"
+    done
+}
+
+# this script & dir containing it
+ME="${BASH_SOURCE[0]}"
+DIR="$(cd "$(dirname $ME)" && pwd)"
+
+# parse command line, get miniconda home and brainiak package location
+(( $# < 2 )) && echo "Usage: $(basename $ME) conda_home /path/to/brainiak-newversionformat.bz2 [N]" && exit 1
+T_CONDA_HOME="$1"
+T_CONDA_INIT="${T_CONDA_HOME}/etc/profile.d/conda.sh"
+[[ ! -f $T_CONDA_INIT ]] && echo "conda.sh not found in $T_CONDA_HOME" && exit 1
+
+BRAINIAK_PKG="$2"
+[[ ${BRAINIAK_PKG:0:1} == . ]] && BRAINIAK_PKG="$PWD/$BRAINIAK_PKG"
+[[ ! -f $BRAINIAK_PKG ]] && echo "$BRAINIAK_PKG not found" && exit 1
+(( $# > 2 )) && BUILD_N=$3 || BUILD_N=0
+
+# assuming running this from tutorials repo root/.conda/bin
+# similar to brainiak repo setup for creating conda pkg
+TUTORIALS_HOME="$(dirname $(dirname $DIR))"
+
+# newversionformat (email with manoj & mihai 5/9) is
+# YYYYMMDD.N.HASH7 where HASH7 is first 7 digits of 
+# master branch commit id ("git show-ref -s HEAD")
+# (emails were about tutorial version but am applying
+#  it to the embedded brainiak package as well)
+BPKG=$(basename $BRAINIAK_PKG)
+BH7=$(cut -d. -f3 <<< $BPKG | cut -d- -f1)
+GDIR="https://github.com/brainiak"
+BRAINIAK_GIT="${GDIR}/brainiak.git"
+TUTORIALS_GIT="${GDIR}/tutorials.git"
+
+TUTORIALS_BUILDDIR=$(dirname $DIR)/tutorialspkg
+TPRE="$TUTORIALS_BUILDDIR/pre-link.sh"
+TPOST="$TUTORIALS_BUILDDIR/post-link.sh"
+clist+="$TPRE"
+clist+="$TPOST"
+
+[[ $OSTYPE =~ darwin ]] && BLDSTRING="mac-64" || BLDSTRING="linux-64"
+
+# brainiak_tutorials version uses hashes from both
+# brainiak and tutorials git repos
+THASH=$(cd $TUTORIALS_HOME && git show-ref -s HEAD)
+TH7=${THASH:0:7}
+datestr=$(date "+%Y%m%d")
+TUTORIALS_VERSION="${datestr}.${BUILD_N}.${TH7}.${BH7}"
+
+set +u
+. "$T_CONDA_INIT"
+CONDA_CHANGEPS1=false conda activate base
+conda config --append channels conda-forge
+set -u
+
+# post-link.sh will run when user installs
+# as a final step
+#  - generates .condarc and .messages.txt file in PREFIX
+#    as part of package
+cat<<POSTLINK >"$TPOST"
+# conda will /bin/bash <this_script> as a post-install step.
+# name it post-link.sh and place in same dir as meta.yaml when building
+
+# install pymanopt
+# PIP_NO_INDEX=False \${PYTHON} -m pip install pymanopt
+
+# install the brainiak package supplied as part of the payload
+# - note won't install dependencies so ensure tutorial pkg does
+conda install "\$PREFIX/$BPKG"
+
+# write message to user how to get the jupyter notebooks etc
+cat <<EOF >> "\${PREFIX}/.messages.txt"
+\$PKG_NAME version \$PKG_VERSION installed.
+Based on
+Brainiak  code as of: ${BRAINIAK_GIT}/commit/${BH7}
+Tutorials code as of: ${TUTORIALS_GIT}/commit/${TH7}
+
+Brainiak and packages required to run the Brainiak tutorial have been
+installed into the \"\$(basename \$PREFIX)\" environment.
+
+Next step: Download the latest tutorial materials from
+
+$TUTORIALS_GIT
+
+EOF
+POSTLINK
+
+# export stuff used by meta.yaml / build.sh
+export BRAINIAK_PKG
+export TUTORIALS_VERSION
+
+conda build "$TUTORIALS_BUILDDIR"
+

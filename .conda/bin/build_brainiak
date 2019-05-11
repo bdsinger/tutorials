@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+
+# build brainiak_tutorials pkg
+# which includes  a local copy of latest brainiak beta conda pkg
+# that is built first below
+
+# tempdir that will be cleaned up unless NOCLEAN is defined
+set -e
+
+# set BUILD_N in environment to use that in version name, otherwise is 0
+# (the Nth build today in case more than 1)
+[[ x$BUILD_N == x ]] && BUILD_N=0 
+
+set -u
+
+NOCLEAN=1
+TDIR=$(mktemp -d)
+trap '{ [[ x$NOCLEAN == x ]] && rm -rf $TDIR || echo "atexit:temp files are in $TDIR"; }' EXIT
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# dir with meta.yaml is DIR's parent dir
+BRAINIAK_BUILDDIR=$(dirname $DIR)/brainiakpkg
+
+GBASE="https://github.com"
+MINICONDA_URL="https://repo.continuum.io/miniconda"
+
+# install miniconda and checkout brainiak & tutorials to a temp dir
+# miniconda3
+if [[ "$OSTYPE" =~ "darwin"* ]]; then
+  MINICONDA_FILE="Miniconda3-latest-MacOSX-x86_64.sh"
+  BLDSTRING="osx-64"
+elif [[ "$OSTYPE" =~ "linux" ]]; then
+  MINICONDA_FILE="Miniconda3-latest-Linux-x86_64.sh"
+  BLDSTRING="linux-64"
+else
+  echo "unsupported OS: $OSTYPE"
+  exit 1
+fi
+
+curl -L "${MINICONDA_URL}/${MINICONDA_FILE}" -o "$TDIR/install_miniconda.sh"
+MDIR="$TDIR/miniconda3"
+# miniconda installer has undefined vars, disable -u around it
+set +u
+bash $TDIR/install_miniconda.sh -b -p "$MDIR"
+set -u
+. "${MDIR}/etc/profile.d/conda.sh"
+CONDA_CHANGEPS1=false conda activate base
+conda update --yes -n base --all
+conda install --yes --quiet anaconda-client conda-build
+# brainiak
+BRAINIAK_HOME="${TDIR}/brainiak"
+BRAINIAK_GIT="${GBASE}/brainiak/brainiak.git"
+git clone "$BRAINIAK_GIT" "$BRAINIAK_HOME"
+BHASH=$(cd $BRAINIAK_HOME && git show-ref -s HEAD)
+BH7=${BHASH:0:7}
+datestr=$(date "+%Y%m%d")
+BRAINIAK_VERSION="${datestr}.${BUILD_N}.${BH7}"
+
+# stuff from brainiak build script
+# See run-tests.sh
+export MKL_THREADING_LAYER=GNU
+
+# See https://github.com/brainiak/brainiak/issues/377
+export KMP_DUPLICATE_LIB_OK=TRUE
+
+# used by build system, meta.yaml to find source and tests
+export BRAINIAK_HOME
+export BRAINIAK_VERSION
+
+# build it any "conda build" options are passed through
+conda build $@ "$BRAINIAK_BUILDDIR"
+
+# there is now brainiak package in
+# $MDIR/conda-bld/{linux|mac}-64/
+# can get it with conda build --output
+# used by brainiak_tutorials build process
+export BRAINIAK_PKG=$(conda build "$BRAINIAK_BUILDDIR" --output)
+BPKG=$(basename $BRAINIAK_PKG)
+
+# hope we can copy it there during tutorial install
+# and specify it!
+
+# now build tutorials conda package, which will
+# embed above brainiak package
+
+TUTORIALS_BUILDDIR=$(dirname $DIR)/tutorialspkg
+
+# brainiak_tutorials
+TUTORIALS_HOME="${TDIR}/tutorials"
+TUTORIALS_GIT="${GBASE}/brainiak/tutorials.git"
+git clone "$TUTORIALS_GIT" "$TUTORIALS_HOME"
+THASH=$(cd $TUTORIALS_HOME && git show-ref -s HEAD)
+TH7=${THASH:0:7}
+TUTORIALS_VERSION="${datestr}.${BUILD_N}.${TH7}.${BH7}"
+
+# pre-link.sh will run 
+cat<<PRELINK >"$TUTORIALS_BUILDDIR/pre-link.sh"
+# conda with /bin/bash <this script> pre-install step
+# name it pre-link.sh and put in meta.yaml dir.
+
+# create .condarc in PREFIX so packages are installed using
+# the required channel priority
+cat <<CRC >\${PREFIX}/.condarc
+channels:
+  - local
+  - pni
+  - defaults
+  - conda-forge
+CRC
+
+# copy the brainiak package to conda-bld
+# so can install it using local channel
+dest="\$(dirname \$PREFIX)/../conda-bld/${BLDSTRING}"
+cp "\${PREFIX}/${BPKG}" "\${dest}"/
+PRELINK
+
+# post-link.sh will run during build
+#  - generates .condarc and .messages.txt file in PREFIX
+#    as part of package
+cat<<POSTLINK >"$TUTORIALS_BUILDDIR/post-link.sh"
+# conda will /bin/bash <this_script> as a post-install step.
+# name it post-link.sh and place in same dir as meta.yaml when building
+
+# write message to user how to get the jupyter notebooks etc
+cat <<EOF >> "\${PREFIX}/.messages.txt"
+\$PKG_NAME version \$PKG_VERSION installed.
+Based on
+Brainiak  code as of: ${BRAINIAK_GIT}/commit/${BH7}
+Tutorials code as of: ${TUTORIALS_GIT}/commit/${TH7}
+
+Brainiak and packages required to run the Brainiak tutorial have been
+installed into the \"\$(basename \$PREFIX)\" environment.
+
+Next step: Activate that environment, and download the latest
+tutorial materials from:
+
+$TUTORIALS_GIT
+
+EOF
+POSTLINK
+
+# export stuff used by meta.yaml / build.sh
+export TUTORIALS_VERSION
+
+conda build "$TUTORIALS_BUILDDIR"
+
